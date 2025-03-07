@@ -1,0 +1,204 @@
+- name: Deploy PostgreSQL master and replica with replication
+  hosts: database
+  become: yes
+
+  vars:
+    postgres_version: "14"
+  
+  tasks:
+    - name: Install PostgreSQL and dependencies
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - postgresql
+        - postgresql-contrib
+        - postgresql-server-dev-all
+        - python3-psycopg2
+
+
+    - name: Start and enable PostgreSQL service
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Create PostgreSQL database 'bot_db'
+      become_user: postgres
+      postgresql_db:
+        name: bot_db
+
+    - name: Change password for postgres
+      shell:
+        cmd: sudo -u postgres psql -c "ALTER ROLE postgres WITH PASSWORD '{{ hostvars['db_server1']['postgres_password'] }}';"
+
+    - name: Create replication user
+      become_user: postgres
+      postgresql_user:
+        name: "{{ hostvars['repl_user']['name'] }}"
+        password: "{{ hostvars['repl_user']['password'] }}"
+        role_attr_flags: REPLICATION,LOGIN
+        state: present
+
+    - name: Configure PostgreSQL as master
+      lineinfile:
+        path: /etc/postgresql/{{ postgres_version }}/main/postgresql.conf 
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - { regexp: "^#listen_addresses =", line: "listen_addresses = '*'"}
+        - { regexp: "^#max_wal_senders =", line: "max_wal_senders = 10"}
+        - { regexp: "^#wal_level =", line: "wal_level = replica"}
+        - { regexp: "^#wal_log_hints =", line: "wal_log_hints = on"}
+        - { regexp: "^hot_standby =", line: "hot_standby = on"}
+        - { regexp: "^#archive_mode =", line: "archive_mode = on"}
+        - { regexp: "^#archive_command =", line: "archive_command = 'cp %p /oracle/pg_data/archive/%f'"}
+      notify:
+        - restart postgresql
+    
+    - name: Configure PostgreSQL authentication
+      become_user: postgres
+      lineinfile:
+        path: /etc/postgresql/{{ postgres_version }}/main/pg_hba.conf
+        line: "host replication all 0.0.0.0/0 scram-sha-256"  #repl_user 192.168.0.125/24
+      notify:
+        - restart postgresql
+
+    - name: Configure PostgreSQL connection
+      become_user: postgres
+      lineinfile:
+        path: /etc/postgresql/{{ postgres_version }}/main/pg_hba.conf
+        line: "host bot_db postgres 0.0.0.0/0 scram-sha-256"  
+      notify:
+        - restart postgresql
+
+    - name: Ensure emails table is present
+      become_user: postgres
+      postgresql_table:
+        db: bot_db
+        table: emails
+        columns:
+          - id SERIAL PRIMARY KEY
+          - email VARCHAR(100) NOT NULL
+
+    - name: Ensure phone_numbers table is present
+      become_user: postgres
+      postgresql_table:
+        db: bot_db
+        table: phone_numbers
+        columns:
+          - id SERIAL PRIMARY KEY
+          - phone_number VARCHAR(20) NOT NULL
+  handlers:
+    - name: restart postgresql
+      systemd:
+        name: postgresql
+        state: restarted        
+
+
+
+
+- name: Setup PostgreSQL replica
+  hosts: replica
+  become: yes
+
+  vars:
+    postgres_version: "14"  
+
+  tasks:
+    - name: Install PostgreSQL and dependencies
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - postgresql
+        - postgresql-contrib
+        - postgresql-server-dev-all
+
+
+    - name: Start and enable PostgreSQL service
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+
+
+    - name: Set listen_addresses in PostgreSQL configuration
+      become_user: postgres
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql/{{ postgres_version }}/main/postgresql.conf
+        regexp: ^#listen_addresses =
+        line: listen_addresses = 'localhost, {{ hostvars['db_server1']['ansible_host'] }}' #192.168.0.124
+        state: present
+      become: yes
+
+    - name: Stop PostgreSQL service temporarily
+      systemd:
+        name: postgresql
+        state: stopped
+
+    - name: Remove folder
+      shell:
+        cmd: rm -rf /var/lib/postgresql/{{ postgres_version }}/main
+
+
+    - name: Perform base backup from master
+      shell: |
+        pg_basebackup -h {{ hostvars['db_server1']['ansible_host'] }} -U {{ hostvars['repl_user']['name'] }} -D /var/lib/postgresql/{{ postgres_version }}/main -P -R
+      args:
+        executable: /bin/bash
+      environment:
+        PGPASSWORD: "{{ hostvars['repl_user']['password'] }}"
+
+    - name: Change owner
+      shell:
+        cmd: chown -R postgres:postgres /var/lib/postgresql/
+
+    - name: Start PostgreSQL service
+      systemd:
+        name: postgresql
+        state: started
+        
+  handlers:
+  - name: restart postgresql
+    systemd:
+      name: postgresql
+      state: restarted
+
+- name: Deploy Python App
+  hosts: bot  
+
+  tasks:
+    - name: Install Git
+      become: yes
+      apt:
+        name: git
+        state: present
+      vars:
+        ansible_python_interpreter: /usr/bin/python3  
+
+    - name: Clone GitHub Repository
+      git:
+        repo: https://github.com/MartinAbdrakhmanov/bot.git  
+        dest: "{{ hostvars['bot_data']['dest_folder'] }}" #/home/userd/bot 
+      become: yes
+
+    - name: Install Python Requirements
+      pip:
+        requirements: "{{ hostvars['bot_data']['dest_folder'] }}/requirements.txt"  
+      become: yes
+
+    - name: Transfer .env file
+      copy:
+        src: "{{ hostvars['bot_data']['env_folder'] }}/.env"
+        dest: "{{ hostvars['bot_data']['dest_folder'] }}/.env"
+      become: yes
+
+    - name: Run bot.py
+      shell: 
+        cmd: python3 {{ hostvars['bot_data']['dest_folder'] }}/bot.py
+
+
+
+

@@ -1,9 +1,1 @@
-# Проекты в разных ветках
-
-## Docker (ветка `docker`)
-
-## Ansible (ветка `ansible`)
-
-## Main (ветка `main`)
-
-В мейне находится бот
+Запускать нужно через `ansible-playbook -i inventory.ini playbook_tg_bot.yml -K` где вводится пароль для sudo доступа
