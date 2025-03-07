@@ -1,5 +1,0 @@
-python-telegram-bot==13.7
-paramiko
-python-dotenv
-psycopg2-binary
-urllib3==1.26.15
