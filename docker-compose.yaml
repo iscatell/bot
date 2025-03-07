@@ -1,0 +1,63 @@
+version: '3.8'
+x-postgres-common: &postgres-common
+  image: postgres:14-alpine
+  user: postgres
+  restart: always
+
+services:
+  db:
+    build:
+      context: ./db
+      args:
+        - DB_USER=${DB_USER}
+        - DB_PASSWORD=${DB_PASSWORD}
+        - DB_DATABASE=${DB_DATABASE}
+        - DB_REPL_USER=${DB_REPL_USER}
+        - DB_REPL_PASSWORD=${DB_REPL_PASSWORD}
+    ports:
+      - 5432:5432
+    environment:
+      <<: *postgres-common
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRESS_DB: ${DB_DATABASE}
+      DB_REPL_USER: ${DB_REPL_USER}
+      DB_REPL_PASSWORD: ${DB_REPL_PASSWORD}
+      POSTGRES_HOST_AUTH_METHOD: "scram-sha-256
+
+        host replication all 0.0.0.0/0 md5"
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    volumes:
+      - postgres_logs:/var/log/postgres
+
+  db_repl:
+    <<: *postgres-common
+    build:
+      context: ./db_repl
+    ports:
+      - 5433:5432
+    environment:
+      PGUSER: ${DB_REPL_USER}
+      PGPASSWORD: ${DB_REPL_PASSWORD}
+    depends_on:
+      - db
+
+  bot:
+    build:
+      context: ./bot
+    environment:
+      - TOKEN=${TOKEN}
+      - RM_HOST=${RM_HOST}
+      - RM_USER=${RM_USER}
+      - RM_PASSWORD=${RM_PASSWORD}
+      - RM_PORT=${RM_PORT}
+      - DB_PORT=${DB_PORT}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_USER=${DB_USER}
+      - DB_HOST=${DB_HOST}
+      - DB_DATABASE=${DB_DATABASE}
+    volumes:
+      - postgres_logs:/var/log/postgres
+
+volumes:
+  postgres_logs:
